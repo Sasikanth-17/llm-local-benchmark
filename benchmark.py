@@ -17,6 +17,9 @@ import tracemalloc
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# Suppress symlink warning
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 def get_system_info():
     """Log system information for reproducibility."""
     info = {
@@ -28,17 +31,17 @@ def get_system_info():
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU",
     }
     if info["gpu"] == "No GPU":
-        logger.warning("No GPU detected. Disabling quantization and using max_new_tokens=50. Expect slower performance.")
+        logger.warning("No GPU detected. Using max_new_tokens=25. Expect slower performance.")
     if info["disk_free_gb"] < 20:
         logger.warning(f"Low disk space ({info['disk_free_gb']:.2f} GB). Deleting model cache after each run.")
     return info
 
 def get_memory_usage():
-    """Return current process memory usage in MB using tracemalloc."""
+    """Return peak memory usage in MB using tracemalloc."""
     snapshot = tracemalloc.take_snapshot()
     stats = snapshot.statistics('lineno')
     total = sum(stat.size for stat in stats) / 1024 / 1024
-    logger.debug(f"Current memory usage: {total:.2f} MB")
+    logger.debug(f"Peak memory usage: {total:.2f} MB")
     return total
 
 def clear_model_cache(model_name):
@@ -101,7 +104,7 @@ def load_model(model_name, use_quantization=True):
     finally:
         tracemalloc.stop()
 
-def run_inference(model, tokenizer, prompt, max_new_tokens=50):
+def run_inference(model, tokenizer, prompt, max_new_tokens=25):
     """Run inference and measure latency and throughput."""
     try:
         inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
@@ -111,7 +114,8 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=50):
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                pad_token_id=tokenizer.eos_token_id
+                pad_token_id=tokenizer.eos_token_id,
+                num_beams=1
             )
         end_time = time.time()
         
@@ -132,7 +136,7 @@ def benchmark_model(model_name, prompt, iterations=5):
         logger.error(f"Skipping {model_name} due to load failure.")
         return results
     
-    max_new_tokens = 50  # Fixed for CPU
+    max_new_tokens = 25  # Reduced for CPU
     logger.info(f"Using max_new_tokens={max_new_tokens} for {model_name}")
     
     for _ in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
