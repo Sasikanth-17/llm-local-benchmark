@@ -11,6 +11,7 @@ import numpy as np
 from huggingface_hub import login
 import shutil
 import gc
+import argparse
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -30,9 +31,9 @@ def get_system_info():
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU",
     }
     if info["gpu"] == "No GPU":
-        logger.warning("No GPU detected. Using max_new_tokens=25. Expect slower performance.")
+        logger.warning("No GPU detected. Using max_new_tokens=50. Expect slower performance.")
     if info["disk_free_gb"] < 20:
-        logger.warning(f"Low disk space ({info['disk_free_gb']:.2f} GB). Deleting model cache after each run.")
+        logger.warning(f"Low disk space ({info['disk_free_gb']:.2f} GB). Recommend keeping cache off.")
     return info
 
 def get_memory_usage():
@@ -45,7 +46,12 @@ def get_memory_usage():
 def clear_model_cache(model_name, keep_cache=False):
     """Delete model cache to free disk space if not keeping cache."""
     if keep_cache:
-        logger.info(f"Keeping cache for {model_name} (disk_free={psutil.disk_usage('.').free / 1024**3:.2f}GB)")
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+        model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
+        if os.path.exists(model_cache):
+            logger.info(f"Keeping cache for {model_name} at {model_cache} (disk_free={psutil.disk_usage('.').free / 1024**3:.2f}GB)")
+        else:
+            logger.debug(f"No cache found for {model_name}")
         return
     cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
     model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
@@ -77,7 +83,7 @@ def load_model(model_name, use_quantization=True, keep_cache=False):
         
         start_time = time.time()
         memory_before = get_memory_usage()
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
         
         # Disable quantization on CPU
         use_quantization = use_quantization and torch.cuda.is_available()
@@ -104,13 +110,12 @@ def load_model(model_name, use_quantization=True, keep_cache=False):
     except Exception as e:
         logger.error(f"Failed to load model {model_name}: {str(e)}")
         return None, None, 0
-    finally:
-        clear_model_cache(model_name, keep_cache)
 
-def run_inference(model, tokenizer, prompt, max_new_tokens=25):
+def run_inference(model, tokenizer, prompt, max_new_tokens=50):
     """Run inference and measure latency and throughput."""
     try:
         inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+        input_tokens = len(inputs["input_ids"][0])
         
         start_time = time.time()
         with torch.no_grad():
@@ -123,46 +128,65 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=25):
             )
         end_time = time.time()
         
-        generated_tokens = len(outputs[0]) - len(inputs["input_ids"][0])
+        generated_tokens = len(outputs[0]) - input_tokens
         generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         time_taken = end_time - start_time
         tpm = (generated_tokens / time_taken) * 60 if time_taken > 0 else 0
         tps = generated_tokens / time_taken if time_taken > 0 else 0
-        logger.info(f"Generated {generated_tokens} tokens: {generated_text[:100]}...")
+        logger.info(f"Input tokens: {input_tokens}, Generated {generated_tokens} tokens: {generated_text[:100]}...")
         return tpm, tps, generated_tokens, generated_text
     except Exception as e:
         logger.error(f"Inference failed: {str(e)}")
         return 0, 0, 0, ""
 
+def save_text_output(model_name, texts):
+    """Save full generated texts to a file."""
+    os.makedirs("results", exist_ok=True)
+    output_file = f"results/generated_text_{model_name.replace('/', '_')}.txt"
+    with open(output_file, "w", encoding="utf-8") as f:
+        for i, text in enumerate(texts, 1):
+            f.write(f"Iteration {i}:\n{text}\n{'-'*50}\n")
+    logger.info(f"Generated texts saved to {output_file}")
+
 def benchmark_model(model_name, prompt, iterations=5, keep_cache=False):
     """Benchmark a single model and return metrics."""
     results = []
+    full_texts = []
     model, tokenizer, load_time = load_model(model_name, keep_cache=keep_cache)
     if model is None or tokenizer is None:
         logger.error(f"Skipping {model_name} due to load failure.")
         return results
     
-    max_new_tokens = 25  # Reduced for CPU
+    max_new_tokens = 50  # Increased for meaningful text
     logger.info(f"Using max_new_tokens={max_new_tokens} for {model_name}")
     
+    # Warmup iteration
+    logger.info(f"Running warmup for {model_name}")
+    run_inference(model, tokenizer, prompt, max_new_tokens)
+    gc.collect()
+    torch.cuda.empty_cache()
+    
     try:
-        for _ in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
+        memory_baseline = get_memory_usage()
+        for i in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
             memory_before = get_memory_usage()
             tpm, tps, gen_tokens, gen_text = run_inference(model, tokenizer, prompt, max_new_tokens)
             if tpm == 0 and tps == 0:
-                logger.error(f"Skipping iteration for {model_name} due to inference failure.")
+                logger.error(f"Skipping iteration {i+1} for {model_name} due to inference failure.")
                 continue
             memory_after = get_memory_usage()
+            peak_memory = max(memory_after - memory_baseline, 0)  # Avoid negative memory
             results.append({
                 "model": model_name,
                 "tpm": tpm,
                 "tokens_per_second": tps,
-                "peak_memory_mb": memory_after - memory_before,
+                "peak_memory_mb": peak_memory,
                 "load_time_s": load_time,
                 "generated_tokens": gen_tokens,
                 "generated_text": gen_text[:100] + "..." if len(gen_text) > 100 else gen_text
             })
-            logger.info(f"Iteration complete: TPM={tpm:.2f}, TPS={tps:.2f}, Memory={memory_after - memory_before:.2f}MB, Tokens={gen_tokens}")
+            full_texts.append(gen_text)
+            logger.info(f"Iteration {i+1} complete: TPM={tpm:.2f}, TPS={tps:.2f}, Memory={peak_memory:.2f}MB, Tokens={gen_tokens}")
             gc.collect()
             torch.cuda.empty_cache()
     finally:
@@ -173,6 +197,7 @@ def benchmark_model(model_name, prompt, iterations=5, keep_cache=False):
         clear_model_cache(model_name, keep_cache)
         if results:
             save_results(results, f"results/benchmark_partial_{model_name.replace('/', '_')}.csv")
+            save_text_output(model_name, full_texts)
     
     return results
 
@@ -186,8 +211,12 @@ def save_results(results, output_file="results/benchmark.csv"):
             writer.writerow(result)
     logger.info(f"Results saved to {output_file}")
 
-def main(keep_cache=False):
+def main():
     """Run benchmark for all models."""
+    parser = argparse.ArgumentParser(description="Benchmark LLMs")
+    parser.add_argument("--keep-cache", action="store_true", help="Keep model cache (faster if >100GB free)")
+    args = parser.parse_args()
+    
     # Log system info
     system_info = get_system_info()
     logger.info("System Info: %s", system_info)
@@ -201,7 +230,7 @@ def main(keep_cache=False):
     
     all_results = []
     for model_name in models:
-        results = benchmark_model(model_name, prompt, keep_cache=keep_cache)
+        results = benchmark_model(model_name, prompt, keep_cache=args.keep_cache)
         if results:
             all_results.extend(results)
     
@@ -220,4 +249,4 @@ def main(keep_cache=False):
         logger.error("No results collected due to errors.")
 
 if __name__ == "__main__":
-    main(keep_cache=True)  # Keep cache with 659GB free disk
+    main()
