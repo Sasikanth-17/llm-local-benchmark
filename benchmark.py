@@ -13,8 +13,9 @@ from huggingface_hub import login
 import shutil
 import gc
 import argparse
+import json
 
-# Suppress symlink warning
+# Suppress symlink warnings
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["TRANSFORMERS_NO_SYMLINKS_WARNING"] = "1"
 
@@ -39,12 +40,15 @@ def get_system_info():
     return info
 
 def get_memory_usage():
-    """Return current memory usage in MB using tracemalloc."""
+    """Return current memory usage in MB using tracemalloc and psutil."""
+    tracemalloc.start()
     snapshot = tracemalloc.take_snapshot()
     stats = snapshot.statistics('lineno')
-    memory_mb = sum(stat.size for stat in stats) / 1024 / 1024
-    logger.debug(f"Current memory usage: {memory_mb:.2f} MB")
-    return memory_mb
+    tracemalloc_memory_mb = sum(stat.size for stat in stats) / 1024 / 1024
+    psutil_memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
+    tracemalloc.stop()
+    logger.debug(f"Memory usage: tracemalloc={tracemalloc_memory_mb:.2f}MB, psutil={psutil_memory_mb:.2f}MB")
+    return max(tracemalloc_memory_mb, psutil_memory_mb)
 
 def clear_model_cache(model_name, keep_cache=False):
     """Delete model cache to free disk space if not keeping cache."""
@@ -67,23 +71,18 @@ def verify_cache(model_name):
     cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
     model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
     if os.path.exists(model_cache):
-        required_files = ["model.safetensors.index.json", "config.json"]
+        required_files = ["config.json"]
         for file in required_files:
             if not os.path.exists(os.path.join(model_cache, file)):
                 logger.warning(f"Cache for {model_name} missing {file}. Forcing re-download.")
                 return False
-        # Check safetensors files
-        index_file = os.path.join(model_cache, "model.safetensors.index.json")
-        if os.path.exists(index_file):
-            import json
-            with open(index_file, "r") as f:
-                index = json.load(f)
-                for weight in index.get("weight_map", {}).values():
-                    if not os.path.exists(os.path.join(model_cache, weight)):
-                        logger.warning(f"Cache for {model_name} missing {weight}. Forcing re-download.")
-                        return False
+        # Check for any safetensors files
+        safetensors_files = [f for f in os.listdir(model_cache) if f.startswith("model-") and f.endswith(".safetensors")]
+        if not safetensors_files:
+            logger.warning(f"Cache for {model_name} missing safetensors files. Forcing re-download.")
+            return False
         total_size = sum(os.path.getsize(os.path.join(model_cache, f)) / 1024**3 for f in os.listdir(model_cache) if os.path.isfile(os.path.join(model_cache, f)))
-        logger.info(f"Cache hit for {model_name} at {model_cache}, size={total_size:.2f}GB")
+        logger.info(f"Cache hit for {model_name} at {model_cache}, size={total_size:.2f}GB, files={safetensors_files}")
         return True
     logger.info(f"Cache miss for {model_name}. Downloading model.")
     return False
@@ -174,7 +173,7 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=100):
         time_taken = end_time - start_time
         tpm = (generated_tokens / time_taken) * 60 if time_taken > 0 else 0
         tps = generated_tokens / time_taken if time_taken > 0 else 0
-        peak_memory = max(memory_after - memory_baseline, 0)
+        peak_memory = max(memory_after - memory_before, 0)
         logger.info(f"Input tokens: {input_tokens}, Generated {generated_tokens} tokens in {time_taken:.2f}s: {generated_text[:100]}...")
         return tpm, tps, peak_memory, generated_tokens, generated_text
     except Exception as e:
@@ -211,7 +210,6 @@ def benchmark_model(model_name, prompt, iterations=5, keep_cache=False):
         torch.cuda.empty_cache()
     
     try:
-        global memory_baseline
         memory_baseline = get_memory_usage()
         for i in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
             tpm, tps, peak_memory, gen_tokens, gen_text = run_inference(model, tokenizer, prompt, max_new_tokens)
@@ -291,6 +289,4 @@ def main():
         logger.error("No results collected due to errors.")
 
 if __name__ == "__main__":
-    tracemalloc.start()
     main()
-    tracemalloc.stop()
