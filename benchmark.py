@@ -8,6 +8,8 @@ import os
 import logging
 import platform
 import numpy as np
+from huggingface_hub import login
+import shutil
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -15,48 +17,83 @@ logger = logging.getLogger(__name__)
 
 def get_system_info():
     """Log system information for reproducibility."""
-    return {
+    info = {
         "os": platform.system(),
         "os_version": platform.version(),
         "cpu": platform.processor(),
         "ram_gb": psutil.virtual_memory().total / 1024**3,
+        "disk_free_gb": psutil.disk_usage('.').free / 1024**3,
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU",
     }
+    if info["gpu"] == "No GPU":
+        logger.warning("No GPU detected. Disabling quantization and using max_new_tokens=50.")
+    if info["disk_free_gb"] < 20:
+        logger.warning(f"Low disk space ({info['disk_free_gb']:.2f} GB). Deleting model cache after each run.")
+    return info
 
 def get_memory_usage():
     """Return current process memory usage in MB."""
     process = psutil.Process()
-    return process.memory_info().rss / 1024 / 1024
+    mem = process.memory_info().rss / 1024 / 1024
+    logger.debug(f"Current memory usage: {mem:.2f} MB")
+    return mem
+
+def clear_model_cache(model_name):
+    """Delete model cache to free disk space."""
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+    model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
+    if os.path.exists(model_cache):
+        shutil.rmtree(model_cache)
+        logger.info(f"Deleted cache for {model_name} at {model_cache}")
+    else:
+        logger.debug(f"No cache found for {model_name}")
 
 def load_model(model_name, use_quantization=True):
     """Load model and tokenizer with optional 4-bit quantization."""
     logger.info(f"Loading model: {model_name}")
     try:
+        # Check disk space
+        disk_free = psutil.disk_usage('.').free / 1024**3
+        if disk_free < 10:
+            logger.error(f"Insufficient disk space ({disk_free:.2f} GB). Need ~20GB for {model_name}. Skipping.")
+            return None, None, 0
+        
+        # Authenticate with Hugging Face token
+        hf_token = os.getenv("HF_TOKEN")
+        if not hf_token:
+            logger.error(f"HF_TOKEN not set. Required for {model_name}. Set it via `set HF_TOKEN=your_token`.")
+            return None, None, 0
+        login(hf_token)
+        logger.info("Authenticated with Hugging Face token.")
+        
         start_time = time.time()
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         
-        if use_quantization:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                device_map="auto",
-                load_in_4bit=True,
-                torch_dtype=torch.float16
-            )
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                device_map="auto",
-                torch_dtype=torch.float16
-            )
+        # Disable quantization on CPU
+        use_quantization = use_quantization and torch.cuda.is_available()
+        if not use_quantization:
+            logger.info(f"Quantization disabled for {model_name} (CPU).")
+        
+        # Check available memory
+        available_mem = psutil.virtual_memory().available / 1024**3
+        if available_mem < 10:
+            logger.warning(f"Low memory ({available_mem:.2f} GB). May cause OOM for {model_name}.")
+        
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map="auto",
+            load_in_4bit=use_quantization,
+            torch_dtype=torch.float16
+        )
         
         load_time = time.time() - start_time
         logger.info(f"Model loaded in {load_time:.2f}s")
         return model, tokenizer, load_time
     except Exception as e:
         logger.error(f"Failed to load model {model_name}: {str(e)}")
-        raise
+        return None, None, 0
 
-def run_inference(model, tokenizer, prompt, max_new_tokens=500):
+def run_inference(model, tokenizer, prompt, max_new_tokens=50):
     """Run inference and measure latency and throughput."""
     try:
         inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
@@ -72,39 +109,45 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=500):
         
         generated_tokens = len(outputs[0]) - len(inputs["input_ids"][0])
         time_taken = end_time - start_time
-        tpm = (generated_tokens / time_taken) * 60
-        tps = generated_tokens / time_taken
+        tpm = (generated_tokens / time_taken) * 60 if time_taken > 0 else 0
+        tps = generated_tokens / time_taken if time_taken > 0 else 0
         return tpm, tps
     except Exception as e:
         logger.error(f"Inference failed: {str(e)}")
-        raise
+        return 0, 0
 
 def benchmark_model(model_name, prompt, iterations=5):
     """Benchmark a single model and return metrics."""
     results = []
-    try:
-        model, tokenizer, load_time = load_model(model_name)
-        
-        for _ in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
-            memory_before = get_memory_usage()
-            tpm, tps = run_inference(model, tokenizer, prompt)
-            memory_after = get_memory_usage()
-            results.append({
-                "model": model_name,
-                "tpm": tpm,
-                "tokens_per_second": tps,
-                "peak_memory_mb": memory_after - memory_before,
-                "load_time_s": load_time
-            })
-            logger.info(f"Iteration complete: TPM={tpm:.2f}, TPS={tps:.2f}, Memory={memory_after - memory_before:.2f}MB")
-        
-        # Clear GPU memory
-        del model
-        torch.cuda.empty_cache()
+    model, tokenizer, load_time = load_model(model_name)
+    if model is None or tokenizer is None:
+        logger.error(f"Skipping {model_name} due to load failure.")
         return results
-    except Exception as e:
-        logger.error(f"Benchmarking failed for {model_name}: {str(e)}")
-        return []
+    
+    max_new_tokens = 50  # Fixed for CPU
+    logger.info(f"Using max_new_tokens={max_new_tokens} for {model_name}")
+    
+    for _ in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
+        memory_before = get_memory_usage()
+        tpm, tps = run_inference(model, tokenizer, prompt, max_new_tokens)
+        if tpm == 0 and tps == 0:
+            logger.error(f"Skipping iteration for {model_name} due to inference failure.")
+            continue
+        memory_after = get_memory_usage()
+        results.append({
+            "model": model_name,
+            "tpm": tpm,
+            "tokens_per_second": tps,
+            "peak_memory_mb": memory_after - memory_before,
+            "load_time_s": load_time
+        })
+        logger.info(f"Iteration complete: TPM={tpm:.2f}, TPS={tps:.2f}, Memory={memory_after - memory_before:.2f}MB")
+    
+    # Clear memory and cache
+    del model
+    torch.cuda.empty_cache()
+    clear_model_cache(model_name)
+    return results
 
 def save_results(results, output_file="results/benchmark.csv"):
     """Save benchmark results to CSV."""
@@ -131,7 +174,8 @@ def main():
     all_results = []
     for model_name in models:
         results = benchmark_model(model_name, prompt)
-        all_results.extend(results)
+        if results:
+            all_results.extend(results)
     
     if all_results:
         save_results(all_results)
