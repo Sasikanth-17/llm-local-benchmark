@@ -47,7 +47,12 @@ def get_memory_usage(use_tracemalloc=True):
         memory_mb = sum(stat.size for stat in stats) / 1024 / 1024
         tracemalloc.stop()
     else:
-        memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
+        process = psutil.Process()
+        memory_mb = process.memory_info().rss / 1024 / 1024
+        # Estimate GPU memory if applicable
+        if torch.cuda.is_available():
+            gpu_memory = torch.cuda.memory_allocated() / 1024 / 1024
+            memory_mb += gpu_memory
     logger.debug(f"Memory usage ({'tracemalloc' if use_tracemalloc else 'psutil'}): {memory_mb:.2f}MB")
     return memory_mb
 
@@ -72,7 +77,7 @@ def verify_cache(model_name):
     cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
     model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
     if os.path.exists(model_cache):
-        model_files = [f for f in os.listdir(model_cache) if f.endswith((".safetensors", ".bin"))]
+        model_files = [f for f in os.listdir(model_cache) if f.endswith((".safetensors", ".bin", ".pt"))]
         if not model_files:
             logger.warning(f"Cache for {model_name} missing model files. Forcing re-download.")
             return False
@@ -138,19 +143,18 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=100, model_name=""):
         inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
         input_tokens = len(inputs["input_ids"][0])
         
-        temperature = 0.9 if "gemma" in model_name.lower() else 0.7
-        top_k = 50 if "gemma" in model_name.lower() else None
+        temperature = 1.0 if "gemma" in model_name.lower() else 0.7
+        top_k = 100 if "gemma" in model_name.lower() else None
         
         tracemalloc.start()
         start_time = time.time()
         memory_before = get_memory_usage(use_tracemalloc=True)
-        token_times = []
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             min_new_tokens=max_new_tokens,
             pad_token_id=tokenizer.eos_token_id,
-            num_beams=1,
+            num_beams=2 if "gemma" in model_name.lower() else 1,
             do_sample=True,
             temperature=temperature,
             top_p=0.9,
@@ -162,7 +166,6 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=100, model_name=""):
         
         generated_tokens = len(outputs[0]) - input_tokens
         generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        # Strip prompt from output
         if generated_text.startswith(prompt):
             generated_text = generated_text[len(prompt):].strip()
         
@@ -171,7 +174,6 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=100, model_name=""):
         tps = generated_tokens / time_taken if time_taken > 0 else 0
         peak_memory = max(memory_after - memory_before, 0)
         logger.info(f"Input tokens: {input_tokens}, Generated {generated_tokens} tokens in {time_taken:.2f}s: {generated_text[:100]}...")
-        logger.debug(f"Per-token times: min={min(token_times):.4f}s, max={max(token_times):.4f}s, avg={np.mean(token_times):.4f}s" if token_times else "No per-token times recorded")
         return tpm, tps, peak_memory, generated_tokens, generated_text
     except Exception as e:
         logger.error(f"Inference failed: {str(e)}")
@@ -261,7 +263,7 @@ def main():
         "Qwen/Qwen2.5-7B",
         "google/gemma-2b"
     ]
-    prompt = "Tell a story about a scientist finding a new energy source."
+    prompt = "Write a short story about a scientist discovering a new energy source to save the planet."
     
     all_results = []
     for model_name in models:
