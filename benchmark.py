@@ -10,6 +10,8 @@ import platform
 import numpy as np
 from huggingface_hub import login
 import shutil
+import gc
+import tracemalloc
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -26,17 +28,18 @@ def get_system_info():
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU",
     }
     if info["gpu"] == "No GPU":
-        logger.warning("No GPU detected. Disabling quantization and using max_new_tokens=50.")
+        logger.warning("No GPU detected. Disabling quantization and using max_new_tokens=50. Expect slower performance.")
     if info["disk_free_gb"] < 20:
         logger.warning(f"Low disk space ({info['disk_free_gb']:.2f} GB). Deleting model cache after each run.")
     return info
 
 def get_memory_usage():
-    """Return current process memory usage in MB."""
-    process = psutil.Process()
-    mem = process.memory_info().rss / 1024 / 1024
-    logger.debug(f"Current memory usage: {mem:.2f} MB")
-    return mem
+    """Return current process memory usage in MB using tracemalloc."""
+    snapshot = tracemalloc.take_snapshot()
+    stats = snapshot.statistics('lineno')
+    total = sum(stat.size for stat in stats) / 1024 / 1024
+    logger.debug(f"Current memory usage: {total:.2f} MB")
+    return total
 
 def clear_model_cache(model_name):
     """Delete model cache to free disk space."""
@@ -66,6 +69,8 @@ def load_model(model_name, use_quantization=True):
         login(hf_token)
         logger.info("Authenticated with Hugging Face token.")
         
+        # Start memory tracking
+        tracemalloc.start()
         start_time = time.time()
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         
@@ -83,7 +88,8 @@ def load_model(model_name, use_quantization=True):
             model_name,
             device_map="auto",
             load_in_4bit=use_quantization,
-            torch_dtype=torch.float16
+            torch_dtype=torch.float16,
+            offload_folder="offload" if not use_quantization else None
         )
         
         load_time = time.time() - start_time
@@ -92,6 +98,8 @@ def load_model(model_name, use_quantization=True):
     except Exception as e:
         logger.error(f"Failed to load model {model_name}: {str(e)}")
         return None, None, 0
+    finally:
+        tracemalloc.stop()
 
 def run_inference(model, tokenizer, prompt, max_new_tokens=50):
     """Run inference and measure latency and throughput."""
@@ -103,7 +111,7 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=50):
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=False
+                pad_token_id=tokenizer.eos_token_id
             )
         end_time = time.time()
         
@@ -145,6 +153,8 @@ def benchmark_model(model_name, prompt, iterations=5):
     
     # Clear memory and cache
     del model
+    del tokenizer
+    gc.collect()
     torch.cuda.empty_cache()
     clear_model_cache(model_name)
     return results
