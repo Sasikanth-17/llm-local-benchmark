@@ -1,4 +1,5 @@
 import time
+import tracemalloc
 import psutil
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -15,6 +16,7 @@ import argparse
 
 # Suppress symlink warning
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["TRANSFORMERS_NO_SYMLINKS_WARNING"] = "1"
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -37,9 +39,10 @@ def get_system_info():
     return info
 
 def get_memory_usage():
-    """Return current memory usage in MB using psutil."""
-    process = psutil.Process()
-    memory_mb = process.memory_info().rss / 1024 / 1024
+    """Return current memory usage in MB using tracemalloc."""
+    snapshot = tracemalloc.take_snapshot()
+    stats = snapshot.statistics('lineno')
+    memory_mb = sum(stat.size for stat in stats) / 1024 / 1024
     logger.debug(f"Current memory usage: {memory_mb:.2f} MB")
     return memory_mb
 
@@ -69,7 +72,18 @@ def verify_cache(model_name):
             if not os.path.exists(os.path.join(model_cache, file)):
                 logger.warning(f"Cache for {model_name} missing {file}. Forcing re-download.")
                 return False
-        logger.info(f"Cache hit for {model_name} at {model_cache}")
+        # Check safetensors files
+        index_file = os.path.join(model_cache, "model.safetensors.index.json")
+        if os.path.exists(index_file):
+            import json
+            with open(index_file, "r") as f:
+                index = json.load(f)
+                for weight in index.get("weight_map", {}).values():
+                    if not os.path.exists(os.path.join(model_cache, weight)):
+                        logger.warning(f"Cache for {model_name} missing {weight}. Forcing re-download.")
+                        return False
+        total_size = sum(os.path.getsize(os.path.join(model_cache, f)) / 1024**3 for f in os.listdir(model_cache) if os.path.isfile(os.path.join(model_cache, f)))
+        logger.info(f"Cache hit for {model_name} at {model_cache}, size={total_size:.2f}GB")
         return True
     logger.info(f"Cache miss for {model_name}. Downloading model.")
     return False
@@ -94,6 +108,7 @@ def load_model(model_name, use_quantization=True, keep_cache=False):
             load_model.logged_in = True
             logger.info("Authenticated with Hugging Face token.")
         
+        tracemalloc.start()
         start_time = time.time()
         memory_baseline = get_memory_usage()
         cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub", f"models--{model_name.replace('/', '--')}")
@@ -123,9 +138,11 @@ def load_model(model_name, use_quantization=True, keep_cache=False):
         load_time = time.time() - start_time
         memory_after = get_memory_usage()
         logger.info(f"Model loaded in {load_time:.2f}s, Memory used: {max(memory_after - memory_baseline, 0):.2f}MB")
+        tracemalloc.stop()
         return model, tokenizer, load_time
     except Exception as e:
         logger.error(f"Failed to load model {model_name}: {str(e)}")
+        tracemalloc.stop()
         return None, None, 0
 
 def run_inference(model, tokenizer, prompt, max_new_tokens=100):
@@ -134,6 +151,7 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=100):
         inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
         input_tokens = len(inputs["input_ids"][0])
         
+        tracemalloc.start()
         start_time = time.time()
         memory_before = get_memory_usage()
         with torch.no_grad():
@@ -142,21 +160,26 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=100):
                 max_new_tokens=max_new_tokens,
                 min_new_tokens=max_new_tokens,
                 pad_token_id=tokenizer.eos_token_id,
-                num_beams=1
+                num_beams=1,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9
             )
         end_time = time.time()
         memory_after = get_memory_usage()
+        tracemalloc.stop()
         
         generated_tokens = len(outputs[0]) - input_tokens
         generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         time_taken = end_time - start_time
         tpm = (generated_tokens / time_taken) * 60 if time_taken > 0 else 0
         tps = generated_tokens / time_taken if time_taken > 0 else 0
-        peak_memory = max(memory_after - memory_before, 0)
+        peak_memory = max(memory_after - memory_baseline, 0)
         logger.info(f"Input tokens: {input_tokens}, Generated {generated_tokens} tokens in {time_taken:.2f}s: {generated_text[:100]}...")
         return tpm, tps, peak_memory, generated_tokens, generated_text
     except Exception as e:
         logger.error(f"Inference failed: {str(e)}")
+        tracemalloc.stop()
         return 0, 0, 0, 0, ""
 
 def save_text_output(model_name, texts):
@@ -177,17 +200,18 @@ def benchmark_model(model_name, prompt, iterations=5, keep_cache=False):
         logger.error(f"Skipping {model_name} due to load failure.")
         return results
     
-    max_new_tokens = 100  # Increased for richer output
+    max_new_tokens = 100
     logger.info(f"Using max_new_tokens={max_new_tokens} for {model_name}")
     
     # Warmup iterations
-    logger.info(f"Running 2 warmup iterations for {model_name}")
-    for _ in range(2):
+    logger.info(f"Running 3 warmup iterations for {model_name}")
+    for _ in range(3):
         run_inference(model, tokenizer, prompt, max_new_tokens)
         gc.collect()
         torch.cuda.empty_cache()
     
     try:
+        global memory_baseline
         memory_baseline = get_memory_usage()
         for i in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
             tpm, tps, peak_memory, gen_tokens, gen_text = run_inference(model, tokenizer, prompt, max_new_tokens)
@@ -244,7 +268,7 @@ def main():
         "Qwen/Qwen2.5-7B",
         "google/gemma-2b"
     ]
-    prompt = "Write a creative story about a scientist who discovers a new energy source that could save the planet, but faces unexpected challenges. The story should be engaging, with a clear beginning, middle, and end, and should explore the scientist's motivations and the impact of their discovery."
+    prompt = "Write a short story about a scientist discovering a new energy source that could save the planet."
     
     all_results = []
     for model_name in models:
@@ -267,4 +291,6 @@ def main():
         logger.error("No results collected due to errors.")
 
 if __name__ == "__main__":
+    tracemalloc.start()
     main()
+    tracemalloc.stop()
