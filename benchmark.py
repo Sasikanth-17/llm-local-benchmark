@@ -13,7 +13,6 @@ from huggingface_hub import login
 import shutil
 import gc
 import argparse
-import json
 
 # Suppress symlink warnings
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -73,7 +72,6 @@ def verify_cache(model_name):
     cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
     model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
     if os.path.exists(model_cache):
-        # Check for any model files
         model_files = [f for f in os.listdir(model_cache) if f.endswith((".safetensors", ".bin"))]
         if not model_files:
             logger.warning(f"Cache for {model_name} missing model files. Forcing re-download.")
@@ -88,13 +86,11 @@ def load_model(model_name, use_quantization=True, keep_cache=False):
     """Load model and tokenizer with optional 4-bit quantization."""
     logger.info(f"Loading model: {model_name}")
     try:
-        # Check disk space
         disk_free = psutil.disk_usage('.').free / 1024**3
         if disk_free < 10:
             logger.error(f"Insufficient disk space ({disk_free:.2f} GB). Need ~20GB for {model_name}. Skipping.")
             return None, None, 0
         
-        # Authenticate with Hugging Face token if not already logged in
         if not hasattr(load_model, "logged_in"):
             hf_token = os.getenv("HF_TOKEN")
             if not hf_token:
@@ -105,18 +101,16 @@ def load_model(model_name, use_quantization=True, keep_cache=False):
             logger.info("Authenticated with Hugging Face token.")
         
         start_time = time.time()
-        memory_baseline = get_memory_usage(use_tracemalloc=False)  # Use psutil for loading
+        memory_baseline = get_memory_usage(use_tracemalloc=False)
         cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub", f"models--{model_name.replace('/', '--')}")
         cache_hit = verify_cache(model_name)
         
         tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, cache_dir=cache_dir if cache_hit else None)
         
-        # Disable quantization on CPU
         use_quantization = use_quantization and torch.cuda.is_available()
         if not use_quantization:
             logger.info(f"Quantization disabled for {model_name} (CPU).")
         
-        # Check available memory
         available_mem = psutil.virtual_memory().available / 1024**3
         if available_mem < 8:
             logger.warning(f"Low memory ({available_mem:.2f} GB). May cause OOM for {model_name}.")
@@ -144,41 +138,40 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=100, model_name=""):
         inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
         input_tokens = len(inputs["input_ids"][0])
         
-        # Adjust temperature for Gemma
-        temperature = 0.8 if "gemma" in model_name.lower() else 0.7
+        temperature = 0.9 if "gemma" in model_name.lower() else 0.7
+        top_k = 50 if "gemma" in model_name.lower() else None
         
         tracemalloc.start()
         start_time = time.time()
         memory_before = get_memory_usage(use_tracemalloc=True)
         token_times = []
-        with torch.no_grad():
-            for _ in range(max_new_tokens):
-                token_start = time.time()
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=1,
-                    min_new_tokens=1,
-                    pad_token_id=tokenizer.eos_token_id,
-                    num_beams=1,
-                    do_sample=True,
-                    temperature=temperature,
-                    top_p=0.9
-                )
-                token_time = time.time() - token_start
-                token_times.append(token_time)
-                inputs = {"input_ids": outputs[:, -1:], "attention_mask": inputs["attention_mask"]}
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            min_new_tokens=max_new_tokens,
+            pad_token_id=tokenizer.eos_token_id,
+            num_beams=1,
+            do_sample=True,
+            temperature=temperature,
+            top_p=0.9,
+            top_k=top_k
+        )
         end_time = time.time()
         memory_after = get_memory_usage(use_tracemalloc=True)
         tracemalloc.stop()
         
         generated_tokens = len(outputs[0]) - input_tokens
         generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Strip prompt from output
+        if generated_text.startswith(prompt):
+            generated_text = generated_text[len(prompt):].strip()
+        
         time_taken = end_time - start_time
         tpm = (generated_tokens / time_taken) * 60 if time_taken > 0 else 0
         tps = generated_tokens / time_taken if time_taken > 0 else 0
         peak_memory = max(memory_after - memory_before, 0)
         logger.info(f"Input tokens: {input_tokens}, Generated {generated_tokens} tokens in {time_taken:.2f}s: {generated_text[:100]}...")
-        logger.debug(f"Per-token times: min={min(token_times):.4f}s, max={max(token_times):.4f}s, avg={np.mean(token_times):.4f}s")
+        logger.debug(f"Per-token times: min={min(token_times):.4f}s, max={max(token_times):.4f}s, avg={np.mean(token_times):.4f}s" if token_times else "No per-token times recorded")
         return tpm, tps, peak_memory, generated_tokens, generated_text
     except Exception as e:
         logger.error(f"Inference failed: {str(e)}")
@@ -206,7 +199,6 @@ def benchmark_model(model_name, prompt, iterations=5, keep_cache=False):
     max_new_tokens = 100
     logger.info(f"Using max_new_tokens={max_new_tokens} for {model_name}")
     
-    # Warmup iterations
     logger.info(f"Running 4 warmup iterations for {model_name}")
     for _ in range(4):
         run_inference(model, tokenizer, prompt, max_new_tokens, model_name)
@@ -261,7 +253,6 @@ def main():
     parser.add_argument("--keep-cache", action="store_true", help="Keep model cache (faster if >100GB free)")
     args = parser.parse_args()
     
-    # Log system info
     system_info = get_system_info()
     logger.info("System Info: %s", system_info)
     
@@ -280,7 +271,6 @@ def main():
     
     if all_results:
         save_results(all_results)
-        # Compute and log averages
         for model_name in models:
             model_results = [r for r in all_results if r["model"] == model_name]
             if model_results:
