@@ -11,7 +11,6 @@ import numpy as np
 from huggingface_hub import login
 import shutil
 import gc
-import tracemalloc
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -37,12 +36,11 @@ def get_system_info():
     return info
 
 def get_memory_usage():
-    """Return peak memory usage in MB using tracemalloc."""
-    snapshot = tracemalloc.take_snapshot()
-    stats = snapshot.statistics('lineno')
-    total = sum(stat.size for stat in stats) / 1024 / 1024
-    logger.debug(f"Peak memory usage: {total:.2f} MB")
-    return total
+    """Return peak memory usage in MB using psutil."""
+    process = psutil.Process()
+    memory_mb = process.memory_info().rss / 1024 / 1024
+    logger.debug(f"Peak memory usage: {memory_mb:.2f} MB")
+    return memory_mb
 
 def clear_model_cache(model_name):
     """Delete model cache to free disk space."""
@@ -84,7 +82,7 @@ def load_model(model_name, use_quantization=True):
         
         # Check available memory
         available_mem = psutil.virtual_memory().available / 1024**3
-        if available_mem < 10:
+        if available_mem < 8:
             logger.warning(f"Low memory ({available_mem:.2f} GB). May cause OOM for {model_name}.")
         
         model = AutoModelForCausalLM.from_pretrained(
@@ -114,19 +112,22 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=25):
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
+                min_new_tokens=max_new_tokens,
                 pad_token_id=tokenizer.eos_token_id,
                 num_beams=1
             )
         end_time = time.time()
         
         generated_tokens = len(outputs[0]) - len(inputs["input_ids"][0])
+        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         time_taken = end_time - start_time
         tpm = (generated_tokens / time_taken) * 60 if time_taken > 0 else 0
         tps = generated_tokens / time_taken if time_taken > 0 else 0
-        return tpm, tps
+        logger.info(f"Generated {generated_tokens} tokens: {generated_text[:100]}...")
+        return tpm, tps, generated_tokens, generated_text
     except Exception as e:
         logger.error(f"Inference failed: {str(e)}")
-        return 0, 0
+        return 0, 0, 0, ""
 
 def benchmark_model(model_name, prompt, iterations=5):
     """Benchmark a single model and return metrics."""
@@ -140,10 +141,9 @@ def benchmark_model(model_name, prompt, iterations=5):
     logger.info(f"Using max_new_tokens={max_new_tokens} for {model_name}")
     
     try:
-        tracemalloc.start()
         for _ in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
             memory_before = get_memory_usage()
-            tpm, tps = run_inference(model, tokenizer, prompt, max_new_tokens)
+            tpm, tps, gen_tokens, gen_text = run_inference(model, tokenizer, prompt, max_new_tokens)
             if tpm == 0 and tps == 0:
                 logger.error(f"Skipping iteration for {model_name} due to inference failure.")
                 continue
@@ -153,18 +153,19 @@ def benchmark_model(model_name, prompt, iterations=5):
                 "tpm": tpm,
                 "tokens_per_second": tps,
                 "peak_memory_mb": memory_after - memory_before,
-                "load_time_s": load_time
+                "load_time_s": load_time,
+                "generated_tokens": gen_tokens,
+                "generated_text": gen_text[:100] + "..." if len(gen_text) > 100 else gen_text
             })
-            logger.info(f"Iteration complete: TPM={tpm:.2f}, TPS={tps:.2f}, Memory={memory_after - memory_before:.2f}MB")
+            logger.info(f"Iteration complete: TPM={tpm:.2f}, TPS={tps:.2f}, Memory={memory_after - memory_before:.2f}MB, Tokens={gen_tokens}")
+            gc.collect()
+            torch.cuda.empty_cache()
     finally:
-        tracemalloc.stop()
-        # Clear memory and cache
         del model
         del tokenizer
         gc.collect()
         torch.cuda.empty_cache()
         clear_model_cache(model_name)
-        # Save partial results
         if results:
             save_results(results, f"results/benchmark_partial_{model_name.replace('/', '_')}.csv")
     
@@ -174,7 +175,7 @@ def save_results(results, output_file="results/benchmark.csv"):
     """Save benchmark results to CSV."""
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["model", "tpm", "tokens_per_second", "peak_memory_mb", "load_time_s"])
+        writer = csv.DictWriter(f, fieldnames=["model", "tpm", "tokens_per_second", "peak_memory_mb", "load_time_s", "generated_tokens", "generated_text"])
         writer.writeheader()
         for result in results:
             writer.writerow(result)
