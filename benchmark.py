@@ -64,16 +64,16 @@ def load_model(model_name, use_quantization=True):
             logger.error(f"Insufficient disk space ({disk_free:.2f} GB). Need ~20GB for {model_name}. Skipping.")
             return None, None, 0
         
-        # Authenticate with Hugging Face token
+        # Authenticate with Hugging Face token if not already logged in
         hf_token = os.getenv("HF_TOKEN")
         if not hf_token:
             logger.error(f"HF_TOKEN not set. Required for {model_name}. Set it via `set HF_TOKEN=your_token`.")
             return None, None, 0
-        login(hf_token)
-        logger.info("Authenticated with Hugging Face token.")
+        if not hasattr(login, "already_called"):
+            login(hf_token)
+            login.already_called = True
+            logger.info("Authenticated with Hugging Face token.")
         
-        # Start memory tracking
-        tracemalloc.start()
         start_time = time.time()
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         
@@ -102,7 +102,7 @@ def load_model(model_name, use_quantization=True):
         logger.error(f"Failed to load model {model_name}: {str(e)}")
         return None, None, 0
     finally:
-        tracemalloc.stop()
+        clear_model_cache(model_name)
 
 def run_inference(model, tokenizer, prompt, max_new_tokens=25):
     """Run inference and measure latency and throughput."""
@@ -139,28 +139,35 @@ def benchmark_model(model_name, prompt, iterations=5):
     max_new_tokens = 25  # Reduced for CPU
     logger.info(f"Using max_new_tokens={max_new_tokens} for {model_name}")
     
-    for _ in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
-        memory_before = get_memory_usage()
-        tpm, tps = run_inference(model, tokenizer, prompt, max_new_tokens)
-        if tpm == 0 and tps == 0:
-            logger.error(f"Skipping iteration for {model_name} due to inference failure.")
-            continue
-        memory_after = get_memory_usage()
-        results.append({
-            "model": model_name,
-            "tpm": tpm,
-            "tokens_per_second": tps,
-            "peak_memory_mb": memory_after - memory_before,
-            "load_time_s": load_time
-        })
-        logger.info(f"Iteration complete: TPM={tpm:.2f}, TPS={tps:.2f}, Memory={memory_after - memory_before:.2f}MB")
+    try:
+        tracemalloc.start()
+        for _ in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
+            memory_before = get_memory_usage()
+            tpm, tps = run_inference(model, tokenizer, prompt, max_new_tokens)
+            if tpm == 0 and tps == 0:
+                logger.error(f"Skipping iteration for {model_name} due to inference failure.")
+                continue
+            memory_after = get_memory_usage()
+            results.append({
+                "model": model_name,
+                "tpm": tpm,
+                "tokens_per_second": tps,
+                "peak_memory_mb": memory_after - memory_before,
+                "load_time_s": load_time
+            })
+            logger.info(f"Iteration complete: TPM={tpm:.2f}, TPS={tps:.2f}, Memory={memory_after - memory_before:.2f}MB")
+    finally:
+        tracemalloc.stop()
+        # Clear memory and cache
+        del model
+        del tokenizer
+        gc.collect()
+        torch.cuda.empty_cache()
+        clear_model_cache(model_name)
+        # Save partial results
+        if results:
+            save_results(results, f"results/benchmark_partial_{model_name.replace('/', '_')}.csv")
     
-    # Clear memory and cache
-    del model
-    del tokenizer
-    gc.collect()
-    torch.cuda.empty_cache()
-    clear_model_cache(model_name)
     return results
 
 def save_results(results, output_file="results/benchmark.csv"):
