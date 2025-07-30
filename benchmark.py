@@ -42,8 +42,11 @@ def get_memory_usage():
     logger.debug(f"Peak memory usage: {memory_mb:.2f} MB")
     return memory_mb
 
-def clear_model_cache(model_name):
-    """Delete model cache to free disk space."""
+def clear_model_cache(model_name, keep_cache=False):
+    """Delete model cache to free disk space if not keeping cache."""
+    if keep_cache:
+        logger.info(f"Keeping cache for {model_name} (disk_free={psutil.disk_usage('.').free / 1024**3:.2f}GB)")
+        return
     cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
     model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
     if os.path.exists(model_cache):
@@ -52,7 +55,7 @@ def clear_model_cache(model_name):
     else:
         logger.debug(f"No cache found for {model_name}")
 
-def load_model(model_name, use_quantization=True):
+def load_model(model_name, use_quantization=True, keep_cache=False):
     """Load model and tokenizer with optional 4-bit quantization."""
     logger.info(f"Loading model: {model_name}")
     try:
@@ -73,6 +76,7 @@ def load_model(model_name, use_quantization=True):
             logger.info("Authenticated with Hugging Face token.")
         
         start_time = time.time()
+        memory_before = get_memory_usage()
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         
         # Disable quantization on CPU
@@ -94,13 +98,14 @@ def load_model(model_name, use_quantization=True):
         )
         
         load_time = time.time() - start_time
-        logger.info(f"Model loaded in {load_time:.2f}s")
+        memory_after = get_memory_usage()
+        logger.info(f"Model loaded in {load_time:.2f}s, Memory used: {memory_after - memory_before:.2f}MB")
         return model, tokenizer, load_time
     except Exception as e:
         logger.error(f"Failed to load model {model_name}: {str(e)}")
         return None, None, 0
     finally:
-        clear_model_cache(model_name)
+        clear_model_cache(model_name, keep_cache)
 
 def run_inference(model, tokenizer, prompt, max_new_tokens=25):
     """Run inference and measure latency and throughput."""
@@ -129,10 +134,10 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=25):
         logger.error(f"Inference failed: {str(e)}")
         return 0, 0, 0, ""
 
-def benchmark_model(model_name, prompt, iterations=5):
+def benchmark_model(model_name, prompt, iterations=5, keep_cache=False):
     """Benchmark a single model and return metrics."""
     results = []
-    model, tokenizer, load_time = load_model(model_name)
+    model, tokenizer, load_time = load_model(model_name, keep_cache=keep_cache)
     if model is None or tokenizer is None:
         logger.error(f"Skipping {model_name} due to load failure.")
         return results
@@ -165,7 +170,7 @@ def benchmark_model(model_name, prompt, iterations=5):
         del tokenizer
         gc.collect()
         torch.cuda.empty_cache()
-        clear_model_cache(model_name)
+        clear_model_cache(model_name, keep_cache)
         if results:
             save_results(results, f"results/benchmark_partial_{model_name.replace('/', '_')}.csv")
     
@@ -181,7 +186,8 @@ def save_results(results, output_file="results/benchmark.csv"):
             writer.writerow(result)
     logger.info(f"Results saved to {output_file}")
 
-def main():
+def main(keep_cache=False):
+    """Run benchmark for all models."""
     # Log system info
     system_info = get_system_info()
     logger.info("System Info: %s", system_info)
@@ -195,7 +201,7 @@ def main():
     
     all_results = []
     for model_name in models:
-        results = benchmark_model(model_name, prompt)
+        results = benchmark_model(model_name, prompt, keep_cache=keep_cache)
         if results:
             all_results.extend(results)
     
@@ -208,9 +214,10 @@ def main():
                 avg_tpm = np.mean([r["tpm"] for r in model_results])
                 avg_tps = np.mean([r["tokens_per_second"] for r in model_results])
                 avg_memory = np.mean([r["peak_memory_mb"] for r in model_results])
-                logger.info(f"Average for {model_name}: TPM={avg_tpm:.2f}, TPS={avg_tps:.2f}, Memory={avg_memory:.2f}MB")
+                avg_tokens = np.mean([r["generated_tokens"] for r in model_results])
+                logger.info(f"Average for {model_name}: TPM={avg_tpm:.2f}, TPS={avg_tps:.2f}, Memory={avg_memory:.2f}MB, Tokens={avg_tokens:.2f}")
     else:
         logger.error("No results collected due to errors.")
 
 if __name__ == "__main__":
-    main()
+    main(keep_cache=True)  # Keep cache with 659GB free disk
