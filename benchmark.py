@@ -13,12 +13,12 @@ import shutil
 import gc
 import argparse
 
+# Suppress symlink warning
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-# Suppress symlink warning
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 def get_system_info():
     """Log system information for reproducibility."""
@@ -31,35 +31,48 @@ def get_system_info():
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU",
     }
     if info["gpu"] == "No GPU":
-        logger.warning("No GPU detected. Using max_new_tokens=50. Expect slower performance.")
+        logger.warning("No GPU detected. Using max_new_tokens=100. Expect slower performance.")
     if info["disk_free_gb"] < 20:
         logger.warning(f"Low disk space ({info['disk_free_gb']:.2f} GB). Recommend keeping cache off.")
     return info
 
 def get_memory_usage():
-    """Return peak memory usage in MB using psutil."""
+    """Return current memory usage in MB using psutil."""
     process = psutil.Process()
     memory_mb = process.memory_info().rss / 1024 / 1024
-    logger.debug(f"Peak memory usage: {memory_mb:.2f} MB")
+    logger.debug(f"Current memory usage: {memory_mb:.2f} MB")
     return memory_mb
 
 def clear_model_cache(model_name, keep_cache=False):
     """Delete model cache to free disk space if not keeping cache."""
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+    model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
     if keep_cache:
-        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
-        model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
         if os.path.exists(model_cache):
             logger.info(f"Keeping cache for {model_name} at {model_cache} (disk_free={psutil.disk_usage('.').free / 1024**3:.2f}GB)")
         else:
             logger.debug(f"No cache found for {model_name}")
         return
-    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
-    model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
     if os.path.exists(model_cache):
         shutil.rmtree(model_cache)
         logger.info(f"Deleted cache for {model_name} at {model_cache}")
     else:
         logger.debug(f"No cache found for {model_name}")
+
+def verify_cache(model_name):
+    """Verify if model cache exists and is intact."""
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+    model_cache = os.path.join(cache_dir, f"models--{model_name.replace('/', '--')}")
+    if os.path.exists(model_cache):
+        required_files = ["model.safetensors.index.json", "config.json"]
+        for file in required_files:
+            if not os.path.exists(os.path.join(model_cache, file)):
+                logger.warning(f"Cache for {model_name} missing {file}. Forcing re-download.")
+                return False
+        logger.info(f"Cache hit for {model_name} at {model_cache}")
+        return True
+    logger.info(f"Cache miss for {model_name}. Downloading model.")
+    return False
 
 def load_model(model_name, use_quantization=True, keep_cache=False):
     """Load model and tokenizer with optional 4-bit quantization."""
@@ -72,18 +85,21 @@ def load_model(model_name, use_quantization=True, keep_cache=False):
             return None, None, 0
         
         # Authenticate with Hugging Face token if not already logged in
-        hf_token = os.getenv("HF_TOKEN")
-        if not hf_token:
-            logger.error(f"HF_TOKEN not set. Required for {model_name}. Set it via `set HF_TOKEN=your_token`.")
-            return None, None, 0
-        if not hasattr(login, "already_called"):
+        if not hasattr(load_model, "logged_in"):
+            hf_token = os.getenv("HF_TOKEN")
+            if not hf_token:
+                logger.error(f"HF_TOKEN not set. Required for {model_name}. Set it via `set HF_TOKEN=your_token`.")
+                return None, None, 0
             login(hf_token)
-            login.already_called = True
+            load_model.logged_in = True
             logger.info("Authenticated with Hugging Face token.")
         
         start_time = time.time()
-        memory_before = get_memory_usage()
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        memory_baseline = get_memory_usage()
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub", f"models--{model_name.replace('/', '--')}")
+        cache_hit = verify_cache(model_name)
+        
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, cache_dir=cache_dir if cache_hit else None)
         
         # Disable quantization on CPU
         use_quantization = use_quantization and torch.cuda.is_available()
@@ -100,24 +116,26 @@ def load_model(model_name, use_quantization=True, keep_cache=False):
             device_map="auto",
             load_in_4bit=use_quantization,
             torch_dtype=torch.float16,
-            offload_folder="offload" if not use_quantization else None
+            offload_folder="offload" if not use_quantization else None,
+            cache_dir=cache_dir if cache_hit else None
         )
         
         load_time = time.time() - start_time
         memory_after = get_memory_usage()
-        logger.info(f"Model loaded in {load_time:.2f}s, Memory used: {memory_after - memory_before:.2f}MB")
+        logger.info(f"Model loaded in {load_time:.2f}s, Memory used: {max(memory_after - memory_baseline, 0):.2f}MB")
         return model, tokenizer, load_time
     except Exception as e:
         logger.error(f"Failed to load model {model_name}: {str(e)}")
         return None, None, 0
 
-def run_inference(model, tokenizer, prompt, max_new_tokens=50):
+def run_inference(model, tokenizer, prompt, max_new_tokens=100):
     """Run inference and measure latency and throughput."""
     try:
         inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
         input_tokens = len(inputs["input_ids"][0])
         
         start_time = time.time()
+        memory_before = get_memory_usage()
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
@@ -127,17 +145,19 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=50):
                 num_beams=1
             )
         end_time = time.time()
+        memory_after = get_memory_usage()
         
         generated_tokens = len(outputs[0]) - input_tokens
         generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         time_taken = end_time - start_time
         tpm = (generated_tokens / time_taken) * 60 if time_taken > 0 else 0
         tps = generated_tokens / time_taken if time_taken > 0 else 0
-        logger.info(f"Input tokens: {input_tokens}, Generated {generated_tokens} tokens: {generated_text[:100]}...")
-        return tpm, tps, generated_tokens, generated_text
+        peak_memory = max(memory_after - memory_before, 0)
+        logger.info(f"Input tokens: {input_tokens}, Generated {generated_tokens} tokens in {time_taken:.2f}s: {generated_text[:100]}...")
+        return tpm, tps, peak_memory, generated_tokens, generated_text
     except Exception as e:
         logger.error(f"Inference failed: {str(e)}")
-        return 0, 0, 0, ""
+        return 0, 0, 0, 0, ""
 
 def save_text_output(model_name, texts):
     """Save full generated texts to a file."""
@@ -157,25 +177,23 @@ def benchmark_model(model_name, prompt, iterations=5, keep_cache=False):
         logger.error(f"Skipping {model_name} due to load failure.")
         return results
     
-    max_new_tokens = 50  # Increased for meaningful text
+    max_new_tokens = 100  # Increased for richer output
     logger.info(f"Using max_new_tokens={max_new_tokens} for {model_name}")
     
-    # Warmup iteration
-    logger.info(f"Running warmup for {model_name}")
-    run_inference(model, tokenizer, prompt, max_new_tokens)
-    gc.collect()
-    torch.cuda.empty_cache()
+    # Warmup iterations
+    logger.info(f"Running 2 warmup iterations for {model_name}")
+    for _ in range(2):
+        run_inference(model, tokenizer, prompt, max_new_tokens)
+        gc.collect()
+        torch.cuda.empty_cache()
     
     try:
         memory_baseline = get_memory_usage()
         for i in tqdm(range(iterations), desc=f"Benchmarking {model_name}"):
-            memory_before = get_memory_usage()
-            tpm, tps, gen_tokens, gen_text = run_inference(model, tokenizer, prompt, max_new_tokens)
+            tpm, tps, peak_memory, gen_tokens, gen_text = run_inference(model, tokenizer, prompt, max_new_tokens)
             if tpm == 0 and tps == 0:
                 logger.error(f"Skipping iteration {i+1} for {model_name} due to inference failure.")
                 continue
-            memory_after = get_memory_usage()
-            peak_memory = max(memory_after - memory_baseline, 0)  # Avoid negative memory
             results.append({
                 "model": model_name,
                 "tpm": tpm,
@@ -183,7 +201,7 @@ def benchmark_model(model_name, prompt, iterations=5, keep_cache=False):
                 "peak_memory_mb": peak_memory,
                 "load_time_s": load_time,
                 "generated_tokens": gen_tokens,
-                "generated_text": gen_text[:100] + "..." if len(gen_text) > 100 else gen_text
+                "generated_text": gen_text[:200] + "..." if len(gen_text) > 200 else gen_text
             })
             full_texts.append(gen_text)
             logger.info(f"Iteration {i+1} complete: TPM={tpm:.2f}, TPS={tps:.2f}, Memory={peak_memory:.2f}MB, Tokens={gen_tokens}")
@@ -226,7 +244,7 @@ def main():
         "Qwen/Qwen2.5-7B",
         "google/gemma-2b"
     ]
-    prompt = "This is a sample prompt for benchmarking LLMs. It contains exactly 100 tokens to ensure consistency across models. The prompt is designed to be neutral and representative of typical input, such as a short paragraph describing a common scenario or question. The goal is to evaluate how quickly and efficiently the model can generate coherent text in response to this input, simulating real-world usage."[:100]
+    prompt = "Write a creative story about a scientist who discovers a new energy source that could save the planet, but faces unexpected challenges. The story should be engaging, with a clear beginning, middle, and end, and should explore the scientist's motivations and the impact of their discovery."
     
     all_results = []
     for model_name in models:
