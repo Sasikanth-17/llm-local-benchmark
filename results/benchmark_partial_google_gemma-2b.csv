@@ -1,0 +1,15 @@
+model,tpm,tokens_per_second,peak_memory_mb,load_time_s,generated_tokens,generated_text
+google/gemma-2b,109.0402494873608,1.8173374914560132,2.00390625,9.374786615371704,50,"Answer:
+
+Step 1/2
+Once upon a time, there was a scientist who had been working tirelessly for years to find a new energy source that would save the planet from the harmful effects of fossil fuels. His..."
+google/gemma-2b,95.16296781664691,1.5860494636107818,0.04296875,9.374786615371704,50,"Use your imagination to describe the new energy source and the effect it has on the world.
+
+Answer:
+
+Step 1/2
+Once upon a time, there was a scientist who had been working tirelessly for years to find ..."
+google/gemma-2b,106.68535754974772,1.7780892924957954,0,9.374786615371704,50,"Answer:  
+
+Step 1/2
+Once upon a time, there lived a scientist named Albert Einstein who was known for his groundbreaking discoveries in the field of physics. One day, while conducting experiments in h..."

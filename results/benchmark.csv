@@ -1,0 +1,25 @@
+model,tpm,tokens_per_second,peak_memory_mb,load_time_s,generated_tokens,generated_text
+meta-llama/Llama-3.1-8B,64.84382025027148,1.0807303375045247,0.21875,16.607823133468628,50,"Note: an example of 50 word creative stories is 3 penguins try to catch some fish. It is full of creative details with many similes and metaphors.
+Write a 50-word creative story about a scientist disc..."
+meta-llama/Llama-3.1-8B,84.78028536463401,1.4130047560772336,0.4375,16.607823133468628,50,"Ensure your piece is free of spelling and grammar errors, and send it to  [email protected]  by April 10. The author of the winning piece will be announced on Earth Day and will receive a $50 Amazon g..."
+meta-llama/Llama-3.1-8B,61.793199731372766,1.0298866621895462,0,16.607823133468628,50,"How do you think this will change the world?
+In this project you will be using one of these energy sources to power your project. Explore the different types of sources and select the one that best su..."
+Qwen/Qwen2.5-7B,69.35461220987256,1.1559102034978759,0.0,14.887361764907837,50,"The story should include at least one descriptive sentence that evokes a specific emotion, and the scientist must be faced with a moral dilemma in deciding how to use the newfound energy source.
+
+Dr. ..."
+Qwen/Qwen2.5-7B,68.71057230316708,1.1451762050527847,0.02734375,14.887361764907837,50,"In a secluded laboratory, Dr. Ethan Wright meticulously studied the data. Suddenly, a flash of light illuminated his screen – an anomaly in the quantum field. Intrigued, he experimented and discovered..."
+Qwen/Qwen2.5-7B,62.12487886106995,1.0354146476844992,0,14.887361764907837,50,"Dr. Cynthia, a brilliant scientist, was searching for a new energy source to save the planet. She stumbled upon a substance that seemed to hold the key to her dream. After months of research, she foun..."
+google/gemma-2b,109.0402494873608,1.8173374914560132,2.00390625,9.374786615371704,50,"Answer:
+
+Step 1/2
+Once upon a time, there was a scientist who had been working tirelessly for years to find a new energy source that would save the planet from the harmful effects of fossil fuels. His..."
+google/gemma-2b,95.16296781664691,1.5860494636107818,0.04296875,9.374786615371704,50,"Use your imagination to describe the new energy source and the effect it has on the world.
+
+Answer:
+
+Step 1/2
+Once upon a time, there was a scientist who had been working tirelessly for years to find ..."
+google/gemma-2b,106.68535754974772,1.7780892924957954,0,9.374786615371704,50,"Answer:  
+
+Step 1/2
+Once upon a time, there lived a scientist named Albert Einstein who was known for his groundbreaking discoveries in the field of physics. One day, while conducting experiments in h..."

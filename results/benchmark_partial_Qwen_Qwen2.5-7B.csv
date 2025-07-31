@@ -1,0 +1,6 @@
+model,tpm,tokens_per_second,peak_memory_mb,load_time_s,generated_tokens,generated_text
+Qwen/Qwen2.5-7B,69.35461220987256,1.1559102034978759,0.0,14.887361764907837,50,"The story should include at least one descriptive sentence that evokes a specific emotion, and the scientist must be faced with a moral dilemma in deciding how to use the newfound energy source.
+
+Dr. ..."
+Qwen/Qwen2.5-7B,68.71057230316708,1.1451762050527847,0.02734375,14.887361764907837,50,"In a secluded laboratory, Dr. Ethan Wright meticulously studied the data. Suddenly, a flash of light illuminated his screen – an anomaly in the quantum field. Intrigued, he experimented and discovered..."
+Qwen/Qwen2.5-7B,62.12487886106995,1.0354146476844992,0,14.887361764907837,50,"Dr. Cynthia, a brilliant scientist, was searching for a new energy source to save the planet. She stumbled upon a substance that seemed to hold the key to her dream. After months of research, she foun..."

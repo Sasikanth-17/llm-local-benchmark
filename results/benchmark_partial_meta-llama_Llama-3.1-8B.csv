@@ -1,0 +1,6 @@
+model,tpm,tokens_per_second,peak_memory_mb,load_time_s,generated_tokens,generated_text
+meta-llama/Llama-3.1-8B,64.84382025027148,1.0807303375045247,0.21875,16.607823133468628,50,"Note: an example of 50 word creative stories is 3 penguins try to catch some fish. It is full of creative details with many similes and metaphors.
+Write a 50-word creative story about a scientist disc..."
+meta-llama/Llama-3.1-8B,84.78028536463401,1.4130047560772336,0.4375,16.607823133468628,50,"Ensure your piece is free of spelling and grammar errors, and send it to  [email protected]  by April 10. The author of the winning piece will be announced on Earth Day and will receive a $50 Amazon g..."
+meta-llama/Llama-3.1-8B,61.793199731372766,1.0298866621895462,0,16.607823133468628,50,"How do you think this will change the world?
+In this project you will be using one of these energy sources to power your project. Explore the different types of sources and select the one that best su..."
