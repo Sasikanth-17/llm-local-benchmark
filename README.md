@@ -79,8 +79,10 @@ Install Dependencies:pip install -r requirements.txt
 Set Hugging Face Token:set HF_TOKEN=your_huggingface_token
 
 
-Run the Benchmark:python benchmark.py --keep-cache
-
+Run the Benchmark:
+<pre>
+  python benchmark.py --keep-cache
+</pre>
 
 Outputs saved to results/.
 Use --keep-cache if >100GB disk space available; otherwise, clear cache:rmdir /s /q %USERPROFILE%\.cache\huggingface\hub
