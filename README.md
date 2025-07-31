@@ -47,14 +47,13 @@ Verdict: Fastest but inconsistent text and low TPM.
 
 Files:
 
-results/benchmark.csv: Aggregated metrics (TPM, TPS, load times, etc.).
-results/benchmark_partial_<model>.csv: Model-specific metrics.
-results/generated_text_<model>.txt: Full text outputs.
+benchmark.csv: Aggregated metrics (TPM, TPS, load times, etc.).
+benchmark_partial_<model>.csv: Model-specific metrics.
+generated_text_<model>.txt: Full text outputs.
 
 Project Structure
 llm-local-benchmark/
-├── src/
-│   └── benchmark.py
+├── benchmark.py
 ├── results/
 │   ├── benchmark.csv
 │   ├── benchmark_partial_meta-llama_Llama-3.1-8B.csv
@@ -79,7 +78,7 @@ Install Dependencies:pip install -r requirements.txt
 Set Hugging Face Token:set HF_TOKEN=your_huggingface_token
 
 
-Run the Benchmark:python src/benchmark.py --keep-cache
+Run the Benchmark:python benchmark.py --keep-cache
 
 
 Outputs saved to results/.
