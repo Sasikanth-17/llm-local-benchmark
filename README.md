@@ -87,7 +87,7 @@ cd llm-local-benchmark
 
 **Run the Benchmark:**
 <pre>
-  python benchmark.py --keep-cache
+python benchmark.py --keep-cache
 </pre>
 
 Outputs saved to results/.
