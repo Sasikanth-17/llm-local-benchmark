@@ -82,7 +82,7 @@ cd llm-local-benchmark
 **Install Dependencies:** <pre>pip install -r requirements.txt</pre>
 
 
-**Set Hugging Face Token:** set HF_TOKEN=your_huggingface_token
+**Set Hugging Face Token:** <pre>set HF_TOKEN=your_huggingface_token</pre>
 
 
 **Run the Benchmark:**
