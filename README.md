@@ -1,15 +1,17 @@
-LLM Local Benchmark
+**LLM Local Benchmark**
 This project benchmarks three large language models—Llama 3.1 8B, Qwen 2.5 7B, and Gemma 2B—for local inference on a CPU-only system. The goal is to evaluate their viability, latency, text quality, and efficiency for generating creative stories, without relying on GPU acceleration.
 Purpose
-The benchmark assesses:
-
+**The benchmark assesses:**
+<pre>
 Viability: Can models run locally on a CPU with 31.7GB RAM without crashing?
 Latency: Tokens per minute (TPM) targets: Llama/Qwen 70–150, Gemma 190–350, stddev <5.
 Text Quality: Generate coherent, diverse 50-word stories (Llama: 2/3+, Qwen: 3/3, Gemma: 2/3+).
 Efficiency: Complete run in ~30 minutes, model load times <10s.
+</pre>
 
-Prompt: "Write a 50-word creative story about a scientist discovering a new energy source to save the planet."
-System Setup
+**Prompt:** "Write a 50-word creative story about a scientist discovering a new energy source to save the planet."
+**System Setup**
+<pre>
 
 OS: Windows 10 (version 10.0.26100)
 CPU: Intel64 Family 6 Model 183 Stepping 1
@@ -19,33 +21,37 @@ GPU: None
 Python: 3.x (compatible with dependencies)
 Run Date: July 31, 2025, 16:47–17:02 IST
 Run Time: ~15 minutes
+</pre>
 
-Results
+**Results**
 The benchmark ran 3 iterations per model, generating 50 tokens per iteration. Key findings:
 
-Qwen 2.5 7B:
+**Qwen 2.5 7B:**
+<pre>
 TPM: 66.73 (range: 62.12–69.35, stddev 3.95), slightly below 70–150, stable.
 Text: 3/3 coherent, diverse stories (e.g., Dr. Sarah’s orb, Dr. Ethan’s Quantum Flux, Dr. Cynthia’s element).
 Load Time: 14.89s (misses <10s due to cache issues).
 Verdict: Best for creative tasks on CPU, near-perfect performance.
+</pre>
 
-
-Llama 3.1 8B:
+**Llama 3.1 8B:**
+<pre>
 TPM: 70.47 (range: 61.79–84.78, stddev 11.86), meets 70–150, unstable (stddev >5).
 Text: 0/3 coherent stories (irrelevant outputs: contest instructions, penguin example).
 Load Time: 16.61s (misses <10s).
 Verdict: Viable for TPM but fails text quality; needs GPU or better prompting.
+</pre>
 
-
-Gemma 2B:
+**Gemma 2B:**
+<pre>
 TPM: 103.63 (range: 95.16–109.04, stddev 7.37), below 190–350, unstable.
 Text: 2/3 partial stories (incomplete, some prompt echoing), misses 2/3+ coherent target.
 Load Time: 9.37s (meets <10s).
 Verdict: Fastest but inconsistent text and low TPM.
+</pre>
 
 
-
-Files:
+**Files:**
 
 benchmark.csv: Aggregated metrics (TPM, TPS, load times, etc.).
 benchmark_partial_<model>.csv: Model-specific metrics.
@@ -68,18 +74,18 @@ llm-local-benchmark/
 ├── .gitignore
 </pre>
 Setup Instructions
-
-Clone the Repository:git clone https://github.com/<your-username>/llm-local-benchmark.git
+<pre>
+Clone the Repository: git clone https://github.com/<your-username>/llm-local-benchmark.git
 cd llm-local-benchmark
+</pre>
+
+**Install Dependencies:** <pre>pip install -r requirements.txt</pre>
 
 
-Install Dependencies:pip install -r requirements.txt
+**Set Hugging Face Token:** set HF_TOKEN=your_huggingface_token
 
 
-Set Hugging Face Token:set HF_TOKEN=your_huggingface_token
-
-
-Run the Benchmark:
+**Run the Benchmark:**
 <pre>
   python benchmark.py --keep-cache
 </pre>
@@ -91,7 +97,7 @@ Use --keep-cache if >100GB disk space available; otherwise, clear cache:rmdir /s
 
 
 
-Notes
+**Notes**
 
 Memory Tracking: Ignored due to unreliable measurements (0.00–2.00MB vs. expected ~100–500MB).
 Cache Issues: Cache misses increased load times for Llama/Qwen. Clear cache before runs for consistency.
