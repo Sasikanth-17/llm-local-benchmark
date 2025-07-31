@@ -33,26 +33,29 @@ def get_system_info():
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU",
     }
     if info["gpu"] == "No GPU":
-        logger.warning("No GPU detected. Using max_new_tokens=100. Expect slower performance.")
+        logger.warning("No GPU detected. Using max_new_tokens=50. Expect slower performance.")
     if info["disk_free_gb"] < 20:
         logger.warning(f"Low disk space ({info['disk_free_gb']:.2f} GB). Recommend keeping cache off.")
     return info
 
 def get_memory_usage(use_tracemalloc=True):
-    """Return current memory usage in MB using tracemalloc or psutil."""
+    """Return current memory usage in MB with improved tracking."""
+    process = psutil.Process()
+    memory_mb = process.memory_info().rss / 1024 / 1024
     if use_tracemalloc:
         tracemalloc.start()
         snapshot = tracemalloc.take_snapshot()
         stats = snapshot.statistics('lineno')
-        memory_mb = sum(stat.size for stat in stats) / 1024 / 1024
+        tracemalloc_memory = sum(stat.size for stat in stats) / 1024 / 1024
+        memory_mb = max(memory_mb, tracemalloc_memory)
         tracemalloc.stop()
-    else:
-        process = psutil.Process()
-        memory_mb = process.memory_info().rss / 1024 / 1024
-        # Estimate GPU memory if applicable
-        if torch.cuda.is_available():
-            gpu_memory = torch.cuda.memory_allocated() / 1024 / 1024
-            memory_mb += gpu_memory
+    if not torch.cuda.is_available():
+        # Estimate CPU memory for PyTorch models
+        try:
+            allocated = sum(t.element_size() * t.nelement() for t in torch.tensors)
+            memory_mb += allocated / 1024 / 1024
+        except:
+            pass
     logger.debug(f"Memory usage ({'tracemalloc' if use_tracemalloc else 'psutil'}): {memory_mb:.2f}MB")
     return memory_mb
 
@@ -137,10 +140,15 @@ def load_model(model_name, use_quantization=True, keep_cache=False):
         logger.error(f"Failed to load model {model_name}: {str(e)}")
         return None, None, 0
 
-def run_inference(model, tokenizer, prompt, max_new_tokens=100, model_name=""):
+def run_inference(model, tokenizer, prompt, max_new_tokens=50, model_name=""):
     """Run inference and measure latency and throughput."""
     try:
-        inputs = tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+        # Prepend stricter instruction to enforce creative output
+        full_prompt = (
+            "Write a creative short story about a scientist discovering a new energy source to save the planet. "
+            "Do not include academic questions, prompts, or unrelated topics.\n\n" + prompt
+        )
+        inputs = tokenizer(full_prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
         input_tokens = len(inputs["input_ids"][0])
         
         temperature = 1.0 if "gemma" in model_name.lower() else 0.7
@@ -166,8 +174,8 @@ def run_inference(model, tokenizer, prompt, max_new_tokens=100, model_name=""):
         
         generated_tokens = len(outputs[0]) - input_tokens
         generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        if generated_text.startswith(prompt):
-            generated_text = generated_text[len(prompt):].strip()
+        if generated_text.startswith(full_prompt):
+            generated_text = generated_text[len(full_prompt):].strip()
         
         time_taken = end_time - start_time
         tpm = (generated_tokens / time_taken) * 60 if time_taken > 0 else 0
@@ -198,7 +206,7 @@ def benchmark_model(model_name, prompt, iterations=5, keep_cache=False):
         logger.error(f"Skipping {model_name} due to load failure.")
         return results
     
-    max_new_tokens = 100
+    max_new_tokens = 50
     logger.info(f"Using max_new_tokens={max_new_tokens} for {model_name}")
     
     logger.info(f"Running 4 warmup iterations for {model_name}")
