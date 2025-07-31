@@ -52,20 +52,21 @@ benchmark_partial_<model>.csv: Model-specific metrics.
 generated_text_<model>.txt: Full text outputs.
 
 Project Structure
+<pre>
 llm-local-benchmark/
 ├── benchmark.py
 ├── results/
-│   ├── benchmark.csv
-│   ├── benchmark_partial_meta-llama_Llama-3.1-8B.csv
-│   ├── benchmark_partial_Qwen_Qwen2.5-7B.csv
-│   ├── benchmark_partial_google_gemma-2b.csv
-│   ├── generated_text_meta-llama_Llama-3.1-8B.txt
-│   ├── generated_text_Qwen_Qwen2.5-7B.txt
-│   ├── generated_text_google_gemma-2b.txt
+│ ├── benchmark.csv
+│ ├── benchmark_partial_meta-llama_Llama-3.1-8B.csv
+│ ├── benchmark_partial_Qwen_Qwen2.5-7B.csv
+│ ├── benchmark_partial_google_gemma-2b.csv
+│ ├── generated_text_meta-llama_Llama-3.1-8B.txt
+│ ├── generated_text_Qwen_Qwen2.5-7B.txt
+│ ├── generated_text_google_gemma-2b.txt
 ├── README.md
 ├── requirements.txt
 ├── .gitignore
-
+</pre>
 Setup Instructions
 
 Clone the Repository:git clone https://github.com/<your-username>/llm-local-benchmark.git
