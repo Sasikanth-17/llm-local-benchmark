@@ -102,8 +102,4 @@ Install huggingface_hub[hf_xet] for faster model downloads:pip install huggingfa
 
 Limitations: Llama’s 0/3 stories and Gemma’s partial outputs indicate CPU limitations. Qwen is the most reliable for creative tasks.
 
-License
-MIT License
-Author
-[Your Name] - Machine Learning Engineer
-For feedback or collaboration, open an issue or contact [your-email@example.com].
+
